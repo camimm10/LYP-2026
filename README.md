@@ -2,4 +2,4 @@
 Enzo Sánchez Pérez
 Camila Montoya Morales 
 Paloma Domínguez Montero 
-Diego 
+Diego Andrés Boscán Guillamón
