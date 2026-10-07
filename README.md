@@ -4,4 +4,4 @@ Camila Montoya Morales
 Paloma Domínguez Montero 
 Diego Andrés Boscán Guillamón
 ## Proyecto
-- [Destello: lenguaje esotérico con linternas](DestellosGit/)
+- [Destello: lenguaje esotérico con luces y formas](DestellosGit/)
