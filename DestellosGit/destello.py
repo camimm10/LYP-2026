@@ -11,7 +11,8 @@ y lo ejecuta para mostrar la salida.
 Uso rápido:
     python destello.py fotos/ejemplo1_hola              # carpeta de fotos
     python destello.py grabacion.mp4                     # un vídeo
-    python destello.py --camara mis_fotos                # hacer las fotos con la webcam
+    python destello.py --camara mis_fotos                # hacer las fotos con la webcam (ESPACIO)
+    python destello.py --directo                         # webcam en automático: C en directo
 
 Opciones útiles:
     --revisar      guarda copias de las fotos con lo que ha detectado dibujado encima
@@ -319,7 +320,7 @@ def transcribir_a_c(prog):
         sangria += antes
         txt = "    " * sangria + linea
         comentario = f"// {i+1:>2}  {simbolos(d)}  {etiqueta(d)}"
-        lineas.append(txt.ljust(ancho) + comentario)
+        lineas.append(txt.ljust(ancho) + ("" if len(txt) < ancho else "  ") + comentario)
         sangria += despues
     if any(nombre(d) == "PARAR" for d in prog):
         lineas.append("fin:")
@@ -382,7 +383,7 @@ def buscar_luces(img):
     return hsv, contornos
 
 
-def leer_destello(img):
+def leer_destello(img, estricto=False):
     """Lee una foto. Devuelve (destello, detalles, avisos). destello = None si es una pausa (oscuridad)."""
     escala = 1000 / max(img.shape[:2])
     if escala < 1:
@@ -416,6 +417,8 @@ def leer_destello(img):
         cv2.drawContours(zona, [c - [x0, y0]], -1, 255, -1)
         color, nota_color = clasificar_color(trozo_hsv, zona)
 
+        if estricto and (color is None or forma is None or color != forma):
+            raise ErrorDestello("Hay luces que no parecen de las linternas (sin color o con color y forma distintos).")
         if color is None and forma is None:
             raise ErrorDestello(f"Linterna {i+1}: no reconozco ni el color ni la forma.")
         if color is None:
@@ -538,6 +541,104 @@ def hacer_fotos_con_camara(carpeta, indice_camara=0):
     cv2.destroyAllWindows()
 
 
+
+def _ascii(t):
+    """cv2.putText no sabe dibujar tildes ni ● ■ ▲: los quitamos para la ventana."""
+    import unicodedata
+    t = t.replace("●", "R").replace("■", "V").replace("▲", "A").replace("Ñ", "NY")
+    return unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode()
+
+
+def _panel_codigo(prog, alto, ancho=560):
+    """Panel lateral con el C que se va escribiendo y la salida en directo."""
+    panel = np.full((alto, ancho, 3), (30, 22, 20), np.uint8)
+    cv2.putText(panel, "CODIGO C EN DIRECTO", (16, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (140, 210, 255), 2)
+    lineas, sangria = [], 1
+    for i, d in enumerate(prog):
+        n = nombre(d)
+        if n is None:
+            continue
+        linea, antes, despues = codigo_c_de(n, valor(d) if n == "DATO" else None)
+        sangria = max(0, sangria + antes)
+        lineas.append(("  " * sangria + linea, f"// {i+1} {etiqueta(d)}"))
+        sangria += despues
+    visibles = lineas[-((alto - 170) // 26):]
+    y = 72
+    for codigo, com in visibles:
+        cv2.putText(panel, _ascii(codigo)[:34], (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (235, 235, 235), 1)
+        cv2.putText(panel, _ascii(com)[:24], (330, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
+        y += 26
+    try:
+        salida = ejecutar(prog) if prog else ""
+    except ErrorDestello:
+        salida = "(falta cerrar el bloque)"
+    cv2.line(panel, (16, alto - 90), (ancho - 16, alto - 90), (90, 90, 90), 1)
+    cv2.putText(panel, "SALIDA", (16, alto - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 210, 255), 1)
+    cv2.putText(panel, _ascii(salida)[:30], (16, alto - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (110, 210, 255), 2)
+    return panel
+
+
+def en_directo(fuente=0, carpeta="grabacion_directo", estables=4, mostrar=True):
+    """
+    Modo automático: la cámara mira la pared y cada destello se apunta solo.
+    - Un destello cuenta cuando las 4 luces se leen IGUAL durante `estables` fotogramas seguidos.
+    - Después hay que tapar las linternas (oscuridad) para que acepte el siguiente.
+    - Q o ESC para terminar. Con un vídeo, termina al acabar el vídeo.
+    Guarda la foto de cada destello en `carpeta`.
+    """
+    cap = cv2.VideoCapture(fuente)
+    if not cap.isOpened():
+        raise ErrorDestello("No encuentro la cámara (prueba --indice-camara 1) o no puedo abrir el vídeo.")
+    os.makedirs(carpeta, exist_ok=True)
+    prog, armado, ultimo, cuenta, oscuros = [], True, None, 0, 0
+    print("\nMODO DIRECTO: mostrad cada destello y tapad las linternas entre uno y otro. Q = terminar.\n")
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        try:
+            d, det, peque, _ = leer_destello(frame, estricto=True)
+            problema = None
+            if d is not None and nombre(d) is None:
+                problema = f"{simbolos(d)} no significa nada"
+                d = "?"
+        except ErrorDestello as e:
+            d, det, peque, problema = "?", [], cv2.resize(frame, None, fx=1000 / max(frame.shape[:2]), fy=1000 / max(frame.shape[:2])) if max(frame.shape[:2]) > 1000 else frame, str(e)
+
+        if d is None:                        # oscuridad: listo para el siguiente
+            oscuros += 1
+            if oscuros >= 2:
+                armado, ultimo, cuenta = True, None, 0
+        elif d != "?":
+            oscuros = 0
+            if armado:
+                cuenta = cuenta + 1 if d == ultimo else 1
+                ultimo = d
+                if cuenta >= estables:
+                    prog.append(d)
+                    armado = False
+                    cv2.imwrite(os.path.join(carpeta, f"{len(prog):02d}.jpg"), frame)
+                    print(f"  {len(prog):>2}. {simbolos(d)}   {etiqueta(d)}")
+        else:
+            oscuros = 0
+
+        if mostrar:
+            vista = dibujar_revision(peque, det, d, "en directo") if det else peque.copy()
+            estado = ("LISTO: mostrad el destello %d" % (len(prog) + 1)) if armado else "APUNTADO. Tapad las linternas"
+            color = (120, 230, 120) if armado else (90, 200, 255)
+            if problema:
+                estado, color = _ascii(problema), (80, 80, 255)
+            cv2.rectangle(vista, (0, 0), (vista.shape[1], 50), (0, 0, 0), -1)
+            cv2.putText(vista, estado[:70], (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            panel = _panel_codigo(prog, vista.shape[0])
+            cv2.imshow("Destello - en directo (Q = terminar)", np.hstack([vista, panel]))
+            if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
+                break
+    cap.release()
+    if mostrar:
+        cv2.destroyAllWindows()
+    return prog
+
 # =====================================================================
 # 5. PROGRAMA PRINCIPAL
 # =====================================================================
@@ -549,7 +650,19 @@ def main():
     ap.add_argument("--indice-camara", type=int, default=0, help="número de cámara (0, 1…)")
     ap.add_argument("--salida", default="programa.c", help="archivo C que se genera (por defecto programa.c)")
     ap.add_argument("--revisar", action="store_true", help="guarda las fotos con lo detectado dibujado encima")
+    ap.add_argument("--directo", nargs="?", const="grabacion_directo", metavar="CARPETA",
+                    help="modo automático con la webcam: detecta cada destello solo y escribe el C en directo")
+    ap.add_argument("--sin-ventana", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
+
+    if args.directo:
+        fuente = args.entrada if args.entrada and args.entrada.lower().endswith(EXT_VIDEO) else args.indice_camara
+        try:
+            prog = en_directo(fuente, args.directo, estables=3 if isinstance(fuente, str) else 4, mostrar=not args.sin_ventana)
+        except ErrorDestello as e:
+            print(f"  ✗ {e}")
+            return 1
+        return terminar(prog, args.salida)
 
     if args.camara:
         hacer_fotos_con_camara(args.camara, args.indice_camara)
@@ -598,6 +711,16 @@ def main():
         print("  No se ha leído ningún destello.")
         return 1
 
+    r = terminar(prog, args.salida)
+    if args.revisar:
+        print(f"\n  Fotos de revisión en: {carpeta_rev}")
+    return r
+
+
+def terminar(prog, salida):
+    if not prog:
+        print("  No se ha leído ningún destello.")
+        return 1
     print("\n2) TRANSCRIPCIÓN A C")
     print("-" * 72)
     try:
@@ -605,11 +728,11 @@ def main():
     except ErrorDestello as e:
         print(f"  ✗ {e}")
         return 1
-    with open(args.salida, "w", encoding="utf-8") as f:
+    with open(salida, "w", encoding="utf-8") as f:
         f.write(c)
     cuerpo = c[c.index("int main(void) {"):]
     print(cuerpo)
-    print(f"  Guardado en {args.salida}")
+    print(f"  Guardado en {salida}")
 
     print("\n3) SALIDA DEL PROGRAMA")
     print("-" * 72)
@@ -618,8 +741,6 @@ def main():
     except ErrorDestello as e:
         print(f"  ✗ {e}")
         return 1
-    if args.revisar:
-        print(f"\n  Fotos de revisión en: {carpeta_rev}")
     return 0
 
 
