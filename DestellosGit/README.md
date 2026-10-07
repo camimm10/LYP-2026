@@ -178,6 +178,10 @@ El archivo C generado se puede compilar con `gcc hola.c -o hola`, o pegarlo en u
 - Sin flash.
 - Las 4 luces enteras y separadas, sin que salgan completamente blancas.
 
+**En directo con la webcam** (detecta cada destello solo; Q = terminar):
+```
+python destello.py --directo --salida hola.c
+```
 ---
 
 ## Archivos
