@@ -17,3 +17,5 @@ python destello.py --directo --salida hola.c
 3. Tapa las linternas antes del siguiente destello.
 Teclas: B = borrar el último destello · R = empezar de nuevo · Q = terminar.
 Si se cambia de cámara o de sitio, se pueden volver a marcar los recuadros con `--zona`.
+
+En este vídeo se ve por dentro cómo funciona la máquina: cada linterna tiene delante una ruleta con tres filtros de celofán (rojo, verde y azul). Los palos ubicados en la parte superior se mueven de izquierda a derecha y de abajo hacia arriba y de arriba hacia abajo, para ir rotando la posición de la ruleta y así cambiar el filtro que es el que queremos que se vea por el agujero y que, a su vez, quedará delante de la linterna. ▶️ [Ver el vídeo del mecanismo interno](VideoMecanimo/mecanismo.mp4)
