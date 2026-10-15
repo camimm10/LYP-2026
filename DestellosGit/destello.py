@@ -353,18 +353,28 @@ def clasificar_forma(contorno):
 
 
 def clasificar_color(hsv, mascara):
-    """Cuenta los píxeles de cada color dentro de la luz (solo los que tienen color de verdad)."""
-    H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    """
+    Decide el color por el TONO MEDIO de los píxeles con color de verdad (los blancos no cuentan).
+    Con linternas de luz cálida, el celofán verde sale amarillo verdoso: por eso «verde» va
+    desde el amarillo (tono 16) hasta el verde azulado (tono 89).
+    Tonos de OpenCV (0–180): rojo ≈ 0/180 · amarillo ≈ 30 · verde ≈ 60 · azul ≈ 110.
+    """
+    H, S, V = hsv[..., 0].astype(np.float32), hsv[..., 1].astype(np.float32), hsv[..., 2]
     sel = (mascara > 0) & (S > 70) & (V > 50)
-    h = H[sel]
-    if h.size < 15:
+    if np.count_nonzero(sel) < 15:
         return None, 0
-    rojo = np.count_nonzero((h <= 15) | (h >= 160))
-    verde = np.count_nonzero((h >= 35) & (h <= 88))
-    azul = np.count_nonzero((h >= 90) & (h <= 135))
-    cuentas = [rojo, verde, azul]
-    mejor = int(np.argmax(cuentas))
-    return mejor, cuentas[mejor] / max(1, sum(cuentas))
+    h, peso = H[sel], S[sel]
+    ang = h * (2 * np.pi / 180)
+    media = np.degrees(np.arctan2((np.sin(ang) * peso).sum(), (np.cos(ang) * peso).sum())) / 2
+    media = media % 180
+    rosado = peso[h >= 150].sum() / peso.sum()          # el rojo del celofán tira a rosa/magenta
+    if rosado > 0.2 or media <= 15 or media >= 150:
+        color = 0
+    elif media < 90:
+        color = 1
+    else:
+        color = 2
+    return color, float(media)
 
 
 def buscar_luces(img):
@@ -417,22 +427,128 @@ def leer_destello(img, estricto=False):
         cv2.drawContours(zona, [c - [x0, y0]], -1, 255, -1)
         color, nota_color = clasificar_color(trozo_hsv, zona)
 
-        if estricto and (color is None or forma is None or color != forma):
-            raise ErrorDestello("Hay luces que no parecen de las linternas (sin color o con color y forma distintos).")
+        if estricto and color is None:
+            raise ErrorDestello("Hay luces sin color (blancas): no parecen de las linternas.")
         if color is None and forma is None:
             raise ErrorDestello(f"Linterna {i+1}: no reconozco ni el color ni la forma.")
         if color is None:
             elegido = forma
             avisos.append(f"Linterna {i+1}: la luz sale muy blanca; me fío de la forma ({FORMA[forma]}).")
-        elif forma is None or color == forma:
-            elegido = color
         else:
-            elegido = forma
-            avisos.append(f"Linterna {i+1}: el color parece {COLOR[color]} pero la forma es {FORMA[forma]}. "
-                          f"Me fío de la forma. Si no es correcto, repetid esta foto.")
+            elegido = color      # manda el color (la forma no se ve si el agujero es redondo)
         destello.append(elegido)
         detalles.append({"contorno": c, "forma": forma, "color": color, "elegido": elegido})
     return destello, detalles, img, avisos
+
+
+# ---------------------------------------------------------------------
+# Lectura por ZONA (cámara fija): se marca una vez el rectángulo donde
+# están las 4 linternas y se divide en 4 partes iguales, una por linterna.
+# Así no molesta nada de lo que haya en el resto de la habitación.
+# ---------------------------------------------------------------------
+ARCHIVO_ZONA = "zona.txt"
+
+
+def preparar(frame):
+    escala = 1000 / max(frame.shape[:2])
+    if escala < 1:
+        frame = cv2.resize(frame, None, fx=escala, fy=escala, interpolation=cv2.INTER_AREA)
+    return frame
+
+
+def cargar_zona():
+    try:
+        with open(ARCHIVO_ZONA) as f:
+            x, y, w, h = map(int, f.read().split())
+        return (x, y, w, h) if w > 20 and h > 10 else None
+    except Exception:
+        return None
+
+
+def elegir_zona(cap):
+    """Paso 1: cámara en directo para colocarla con calma. Paso 2: se congela y se marca la zona."""
+    titulo = "Coloca la camara - ESPACIO cuando se vean bien las 4 linternas"
+    print("\nPASO 1: coloca la cámara apuntando a las 4 linternas.")
+    print("        Cuando se vean bien, pulsa ESPACIO en la ventana (Q = salir).")
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            raise ErrorDestello("La cámara no da imagen.")
+        frame = preparar(frame)
+        vista = frame.copy()
+        cv2.rectangle(vista, (0, 0), (vista.shape[1], 44), (0, 0, 0), -1)
+        cv2.putText(vista, "Coloca la camara. ESPACIO = listo   Q = salir", (12, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (120, 230, 120), 2)
+        cv2.imshow(titulo, vista)
+        tecla = cv2.waitKey(1) & 0xFF
+        if tecla == ord(" "):
+            break
+        if tecla in (ord("q"), 27):
+            cv2.destroyAllWindows()
+            raise ErrorDestello("Cancelado.")
+    cv2.destroyWindow(titulo)
+    print("\nPASO 2: arrastra con el ratón un rectángulo que encierre SOLO las 4 linternas")
+    print("        (la franja de los agujeros, sin papel blanco) y pulsa ENTER.")
+    while True:
+        x, y, w, h = map(int, cv2.selectROI("Marca la zona de las 4 linternas y pulsa ENTER", frame, showCrosshair=False))
+        cv2.destroyWindow("Marca la zona de las 4 linternas y pulsa ENTER")
+        if w >= 20 and h >= 10:
+            break
+        print("  No se ha marcado ninguna zona. Prueba otra vez.")
+    with open(ARCHIVO_ZONA, "w") as f:
+        f.write(f"{x} {y} {w} {h}")
+    print(f"  Zona guardada en {ARCHIVO_ZONA}: x={x} y={y} ancho={w} alto={h}")
+    return (x, y, w, h)
+
+
+def leer_destello_zona(img, zona):
+    """Como leer_destello, pero mirando solo dentro de la zona, dividida en 4 partes."""
+    x, y, w, h = zona
+    trozo = img[y:y + h, x:x + w]
+    if trozo.size == 0:
+        raise ErrorDestello("La zona marcada queda fuera de la imagen. Vuelve a marcarla con --zona.")
+    hsv = cv2.cvtColor(trozo, cv2.COLOR_BGR2HSV)
+    V = cv2.GaussianBlur(hsv[..., 2], (5, 5), 0)
+    destello, detalles, apagadas = [], [], []
+    for i in range(4):
+        a, b = int(i * w / 4), int((i + 1) * w / 4)
+        Vs, hs = V[:, a:b], hsv[:, a:b]
+        brillo = int(Vs.max())
+        if brillo < 150 or np.count_nonzero(Vs > 0.8 * brillo) < 20:
+            apagadas.append(i)
+            continue
+        # núcleo = la mancha que contiene el punto MÁS brillante (la linterna, no el papel blanco)
+        _, _, _, pmax = cv2.minMaxLoc(Vs)
+        nucleo = (Vs >= max(0.9 * brillo, 150)).astype(np.uint8) * 255
+        cs, _ = cv2.findContours(nucleo, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        dentro = [k for k in cs if cv2.pointPolygonTest(k, (float(pmax[0]), float(pmax[1])), False) >= 0]
+        c = dentro[0] if dentro else max(cs, key=cv2.contourArea)
+        forma, _ = clasificar_forma(c)
+        # el color está sobre todo en el borde de la luz (el centro sale blanco)
+        r = max(6, int(np.sqrt(cv2.contourArea(c) / np.pi)))
+        zona_color = np.zeros(Vs.shape, np.uint8)
+        cv2.drawContours(zona_color, [c], -1, 255, -1)
+        zona_color = cv2.dilate(zona_color, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
+        color, tono = clasificar_color(hs, zona_color)
+        if color is None:
+            raise ErrorDestello(f"Linterna {i+1}: la luz sale blanca, no distingo el color.")
+        destello.append(color)
+        detalles.append({"contorno": c + [x + a, y], "forma": forma, "color": color, "elegido": color, "tono": tono})
+    if len(apagadas) == 4:
+        return None, [], img, []
+    if apagadas:
+        raise ErrorDestello("No se ve la linterna " + ", ".join(str(i + 1) for i in apagadas) + ".")
+    return destello, detalles, img, []
+
+
+def dibujar_zona(vista, zona):
+    x, y, w, h = zona
+    cv2.rectangle(vista, (x, y), (x + w, y + h), (200, 200, 200), 1)
+    for i in range(1, 4):
+        xi = x + int(i * w / 4)
+        cv2.line(vista, (xi, y), (xi, y + h), (120, 120, 120), 1)
+    for i in range(4):
+        cv2.putText(vista, str(i + 1), (x + int((i + 0.45) * w / 4), y + h + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
 
 def dibujar_revision(img, detalles, destello, titulo):
@@ -578,7 +694,7 @@ def _panel_codigo(prog, alto, ancho=560):
     return panel
 
 
-def en_directo(fuente=0, carpeta="grabacion_directo", estables=4, mostrar=True):
+def en_directo(fuente=0, carpeta="grabacion_directo", estables=4, mostrar=True, nueva_zona=False):
     """
     Modo automático: la cámara mira la pared y cada destello se apunta solo.
     - Un destello cuenta cuando las 4 luces se leen IGUAL durante `estables` fotogramas seguidos.
@@ -590,20 +706,36 @@ def en_directo(fuente=0, carpeta="grabacion_directo", estables=4, mostrar=True):
     if not cap.isOpened():
         raise ErrorDestello("No encuentro la cámara (prueba --indice-camara 1) o no puedo abrir el vídeo.")
     os.makedirs(carpeta, exist_ok=True)
-    prog, armado, ultimo, cuenta, oscuros = [], True, None, 0, 0
-    print("\nMODO DIRECTO: mostrad cada destello y tapad las linternas entre uno y otro. Q = terminar.\n")
+    ok, primero = cap.read()
+    if not ok:
+        raise ErrorDestello("La cámara no da imagen.")
+    primero = preparar(primero)
+    zona = None if nueva_zona else cargar_zona()
+    if zona is None:
+        if mostrar:
+            zona = elegir_zona(cap)
+        else:
+            zona = (0, 0, primero.shape[1], primero.shape[0])   # sin ventana: toda la imagen
+    else:
+        print(f"  Uso la zona guardada en {ARCHIVO_ZONA}. Para marcarla de nuevo: --zona")
+    # Empieza DESARMADO: hasta que no se vea oscuridad (linternas tapadas) no apunta nada.
+    # Así no se cuela ningún destello mientras se colocan las ruletas.
+    prog, armado, ultimo, cuenta, oscuros = [], False, None, 0, 0
+    print("\nMODO DIRECTO: tapad las linternas para empezar. Después, cada destello quieto ~1 s y tapad.")
+    print("Teclas en la ventana:  B = borrar el último destello   R = empezar de nuevo   Q = terminar\n")
     while True:
         ok, frame = cap.read()
         if not ok:
             break
+        peque = preparar(frame)
         try:
-            d, det, peque, _ = leer_destello(frame, estricto=True)
+            d, det, peque, _ = leer_destello_zona(peque, zona)
             problema = None
             if d is not None and nombre(d) is None:
                 problema = f"{simbolos(d)} no significa nada"
                 d = "?"
         except ErrorDestello as e:
-            d, det, peque, problema = "?", [], cv2.resize(frame, None, fx=1000 / max(frame.shape[:2]), fy=1000 / max(frame.shape[:2])) if max(frame.shape[:2]) > 1000 else frame, str(e)
+            d, det, problema = "?", [], str(e)
 
         if d is None:                        # oscuridad: listo para el siguiente
             oscuros += 1
@@ -624,16 +756,34 @@ def en_directo(fuente=0, carpeta="grabacion_directo", estables=4, mostrar=True):
 
         if mostrar:
             vista = dibujar_revision(peque, det, d, "en directo") if det else peque.copy()
-            estado = ("LISTO: mostrad el destello %d" % (len(prog) + 1)) if armado else "APUNTADO. Tapad las linternas"
-            color = (120, 230, 120) if armado else (90, 200, 255)
+            dibujar_zona(vista, zona)
+            if armado:
+                estado, color = "LISTO: mostrad el destello %d" % (len(prog) + 1), (120, 230, 120)
+                if cuenta and ultimo:
+                    estado = "Leyendo %s ... quieto" % _ascii(simbolos(ultimo))
+            elif not prog:
+                estado, color = "TAPAD las linternas para empezar", (90, 200, 255)
+            else:
+                estado, color = "APUNTADO. Tapad las linternas", (90, 200, 255)
             if problema:
                 estado, color = _ascii(problema), (80, 80, 255)
             cv2.rectangle(vista, (0, 0), (vista.shape[1], 50), (0, 0, 0), -1)
             cv2.putText(vista, estado[:70], (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
             panel = _panel_codigo(prog, vista.shape[0])
+            cv2.putText(vista, "B = borrar ultimo   R = empezar de nuevo   Q = terminar", (12, vista.shape[0] - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1)
             cv2.imshow("Destello - en directo (Q = terminar)", np.hstack([vista, panel]))
-            if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
+            tecla = cv2.waitKey(1) & 0xFF
+            if tecla in (ord("q"), 27):
                 break
+            if tecla in (ord("b"), 8) and prog:
+                quitado = prog.pop()
+                print(f"  (borrado el destello {len(prog)+1}: {simbolos(quitado)})")
+                armado, ultimo, cuenta = False, None, 0
+            if tecla == ord("r"):
+                prog.clear()
+                print("  (programa borrado: empezamos de nuevo)")
+                armado, ultimo, cuenta = False, None, 0
     cap.release()
     if mostrar:
         cv2.destroyAllWindows()
@@ -652,13 +802,14 @@ def main():
     ap.add_argument("--revisar", action="store_true", help="guarda las fotos con lo detectado dibujado encima")
     ap.add_argument("--directo", nargs="?", const="grabacion_directo", metavar="CARPETA",
                     help="modo automático con la webcam: detecta cada destello solo y escribe el C en directo")
+    ap.add_argument("--zona", action="store_true", help="volver a marcar con el ratón la zona de las 4 linternas")
     ap.add_argument("--sin-ventana", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     if args.directo:
         fuente = args.entrada if args.entrada and args.entrada.lower().endswith(EXT_VIDEO) else args.indice_camara
         try:
-            prog = en_directo(fuente, args.directo, estables=3 if isinstance(fuente, str) else 4, mostrar=not args.sin_ventana)
+            prog = en_directo(fuente, args.directo, estables=3 if isinstance(fuente, str) else 8, mostrar=not args.sin_ventana, nueva_zona=args.zona)
         except ErrorDestello as e:
             print(f"  ✗ {e}")
             return 1
