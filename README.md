@@ -16,7 +16,9 @@ linternas  ──►  fotos  ──►  OpenCV reconoce ● ■ ▲  ──►  
 
 ## La idea
 
-Nuestro logo cuenta la historia de **Octavio**, un pulpo alienígena de Octópolis, un planeta cubierto de océano donde nadie habla: sus habitantes se comunican encendiendo luces de colores en la piel. Cuando Octavio llega a la Tierra, nadie entiende sus destellos. Así que se esconde dentro de un ordenador viejo (con bigote, para parecer humano) y construye una máquina con cuatro linternas que **transcribe su idioma de luz a código**.
+Nuestro logo cuenta la historia de **Octavio**, un Octaviano de 5 años el cual se encuentra en una posicion desesperada, y se ve forzado a encontrar una manera de poder comunicarse con los humanos.
+
+[Leer la historia completa de Octavio](Documentacion/Lore_Octavianos.md)
 
 Para el mecanismo nos inspiramos en:
 - **Los focos y el código morse**: la luz como señal.
